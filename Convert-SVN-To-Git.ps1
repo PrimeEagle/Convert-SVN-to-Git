@@ -1,20 +1,42 @@
 Param(
     [Parameter(Mandatory=$true)]
     [string]$SvnUrl,
+
     [Parameter(Mandatory=$true)]
     [string]$TargetDirectory,
-    [Parameter(Mandatory=$true)]
+
+    [Parameter(Mandatory=$true, ParameterSetName="NonStandardLayout")]
+    [string]$Trunk,
+
+    [Parameter(Mandatory=$true, ParameterSetName="NonStandardLayout")]
+    [string]$Branches,
+
+    [Parameter(Mandatory=$true, ParameterSetName="NonStandardLayout")]
+    [string]$Tags,
+
+    [Parameter(Mandatory=$false)]
     [string]$GitUrl,
+
     [Parameter(Mandatory=$true)]
     [string]$UsersFile,
-    [Parameter(Mandatory=$false)]
-    [switch]$NotStandardLayout,
+
+    [Parameter(Mandatory=$false, ParameterSetName="StandardLayout")]
+    [switch]$IsStandardLayout,
+
     [Parameter(Mandatory=$false)]
     [switch]$IncludeMetadata,
+
     [Parameter(Mandatory=$false)]
-    [switch]$GitRepositoryExists,
+    [string]$MainBranchName = "main",
+	
+	[Parameter(Mandatory=$false)]
+    [switch]$CreatePrivateRepository,
+
     [Parameter(Mandatory=$false)]
-    [string]$MainBranchName = "main"
+    [switch]$CreatePublicRepository,
+	
+	[Parameter(Mandatory=$false)]
+    [string]$RepoName
 )
 
 function ProcessSvnBranchesAndTags {
@@ -64,36 +86,49 @@ function ProcessGitBranches {
     }
 }
 
+if ($CreatePrivateRepository -and $CreatePublicRepository) {
+    throw "Cannot use -CreatePrivateRepository and -CreatePublicRepository together."
+}
+
+if (($CreatePrivateRepository -or $CreatePublicRepository) -and -not $RepoName) {
+    throw "The parameter -RepoName is required when creating a GitHub repository."
+}
+
 $TempTargetDirectory = "$TargetDirectory.tmp"
 
 $arguments = @("svn", "clone", "--authors-file=$UsersFile", $SvnUrl, $TempTargetDirectory)
-if (-Not $NotStandardLayout) { $arguments += "--stdlayout" }
+
+if ($IsStandardLayout) 
+{ 
+	$arguments += "--stdlayout" 
+}
+else
+{
+	$arguments += "--trunk=$Trunk"
+	$arguments += "--branches=$Branches"
+	$arguments += "--tags=$Tags"
+}
+
 if (-Not $IncludeMetadata) { $arguments += "--no-metadata" }
 
 & git $arguments
 
 ProcessSvnBranchesAndTags -tempDir $TempTargetDirectory -mainBranch $MainBranchName
 
-if ($GitRepositoryExists) {
-    if (-Not (Test-Path $TargetDirectory)) {
-        git clone $GitUrl $TargetDirectory
-    }
+git clone "$TempTargetDirectory" $TargetDirectory
 
-    if (!(git -C $TargetDirectory rev-parse --git-dir 2> $null)) {
-        Write-Error "The target directory does not appear to be a Git repository."
-        return
-    }
+ProcessGitBranches -tempDir $TempTargetDirectory -mainBranch $MainBranchName
 
-    git -C $TargetDirectory fetch origin
-    git -C $TargetDirectory remote add svn-migration "$TempTargetDirectory"
-    git -C $TargetDirectory pull svn-migration $MainBranchName --allow-unrelated-histories
-} else {
-    git clone "$TempTargetDirectory" $TargetDirectory
+git -C $TargetDirectory remote rm origin
 
-    ProcessGitBranches -tempDir $TempTargetDirectory -mainBranch $MainBranchName
+if($CreatePrivateRepository -or $CreatePublicRepository)
+{
+	$repoVisibility = if ($CreatePrivateRepository) { "private" } else { "public" }
 
-    git -C $TargetDirectory remote rm origin
-    git -C $TargetDirectory remote add origin $GitUrl
+	gh repo create $RepoName --$repoVisibility --source="$TargetDirectory" --push
+	
+	git -C $TargetDirectory branch -M $MainBranchName
+	git -C $TargetDirectory push --set-upstream origin $MainBranchName
 }
 
 if (Test-Path $TempTargetDirectory) {
