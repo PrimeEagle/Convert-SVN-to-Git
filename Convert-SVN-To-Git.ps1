@@ -11,7 +11,7 @@ Param(
     [Parameter(Mandatory=$true, ParameterSetName="NonStandardLayout")]
     [string]$Branches,
 
-    [Parameter(Mandatory=$true, ParameterSetName="NonStandardLayout")]
+    [Parameter(Mandatory=$false, ParameterSetName="NonStandardLayout")]
     [string]$Tags,
 
     [Parameter(Mandatory=$false)]
@@ -55,7 +55,7 @@ function ProcessSvnBranchesAndTags {
             git -C $tempDir checkout $mainBranch
             git -C $tempDir tag $tagName "tag-$tagName"
             git -C $tempDir branch -D "tag-$tagName"
-        } elseif (-Not $remoteBranch.Contains("trunk")) {
+        } else {
             git -C $tempDir checkout -b $remoteBranch $remoteBranch
         }
     }
@@ -63,24 +63,25 @@ function ProcessSvnBranchesAndTags {
 
 function ProcessGitBranches {
     param (
-        [string]$tempDir,
+        [string]$dir,
         [string]$mainBranch
     )
 
-    $remoteBranches = git -C $tempDir branch -r
+    $remoteBranches = git -C $dir branch -r
     foreach ($remoteBranch in $remoteBranches) {
         $remoteBranch = $remoteBranch.Trim()
 
+        # Skip 'HEAD' and main branch
         if ($remoteBranch -notcontains "HEAD" -and $remoteBranch -notcontains $mainBranch) {
-            $branchName = $remoteBranch.Substring(7)
-            if (!(git -C $tempDir branch --list $branchName)) {
-                git -C $tempDir checkout -b $branchName $remoteBranch
+            $branchName = $remoteBranch.Substring($remoteBranch.IndexOf('/') + 1)
+            if (!(git -C $dir branch --list $branchName)) {
+                git -C $dir checkout -b $branchName $remoteBranch
             }
         }
     }
 
-    if (git -C $tempDir branch --list $mainBranch) {
-        git -C $tempDir checkout $mainBranch
+    if (git -C $dir branch --list $mainBranch) {
+        git -C $dir checkout $mainBranch
     } else {
         Write-Warning "Main branch '$mainBranch' does not exist."
     }
@@ -110,26 +111,21 @@ else
 }
 
 if (-Not $IncludeMetadata) { $arguments += "--no-metadata" }
-
 & git $arguments
-
 ProcessSvnBranchesAndTags -tempDir $TempTargetDirectory -mainBranch $MainBranchName
-
 git clone "$TempTargetDirectory" $TargetDirectory
-
 ProcessGitBranches -tempDir $TempTargetDirectory -mainBranch $MainBranchName
-
 git -C $TargetDirectory remote rm origin
-
 if($CreatePrivateRepository -or $CreatePublicRepository)
 {
 	$repoVisibility = if ($CreatePrivateRepository) { "private" } else { "public" }
 
 	gh repo create $RepoName --$repoVisibility --source="$TargetDirectory" --push
-	
 	git -C $TargetDirectory branch -M $MainBranchName
 	git -C $TargetDirectory push --set-upstream origin $MainBranchName
 }
+
+ProcessGitBranches -dir $TargetDirectory -mainBranch $MainBranchName
 
 if (Test-Path $TempTargetDirectory) {
     Remove-Item -Recurse -Force "$TempTargetDirectory"
